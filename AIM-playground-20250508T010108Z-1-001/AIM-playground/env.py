@@ -2,8 +2,10 @@ import numpy as np
 import pyglet
 from pyglet import image
 import platform
-from PIL import Image
 import tensorflow as tf
+from PIL import Image
+import os
+import time
 
 class ArmEnv(object):
     viewer = None
@@ -15,13 +17,21 @@ class ArmEnv(object):
     dampingK = 0.5
     goal_pos_radius = 200.
 
-    def __init__(self):
+    def __init__(self, image_dir='training_frames', image_size=(64, 64)):
         self.arm_info = np.zeros(
             2, dtype=[('l', np.float32), ('r', np.float32)])
         self.arm_info['l'] = 100        # 2 arms length
         self.arm_info['r'] = np.pi/6    # 2 angles information
         self.on_goal = 0
         self.prev_finger_pos = np.array([0, 0])
+        self.image_index = 0
+        self.image_size = image_size
+
+    def ensure_render_initialized(self):
+        if self.viewer is None:
+            self.viewer = Viewer(self.arm_info, self.goal)
+            self.viewer.render()
+            time.sleep(0.1)  # Give time for the window to initialize properly
 
     def step(self, action):
         done = False
@@ -50,10 +60,32 @@ class ArmEnv(object):
             self.on_goal = 0
 
         self.prev_finger_pos = finger
-        # state
+        # self.render()
         s = np.concatenate((a1xy_/200, finger/200, dist1 + dist2, [1. if self.on_goal else 0.]))
         return s, r, done
+    
+    def get_image_observation(self, resize=None, as_tensor=False):
+        self.ensure_render_initialized()   # <-- this guarantees a warm buffer
 
+        self.render()  # render latest state
+
+        buffer = pyglet.image.get_buffer_manager().get_color_buffer()
+        image_data = buffer.get_image_data()
+
+        if image_data.width == 0 or image_data.height == 0:
+            raise RuntimeError("Image buffer is empty. Viewer may not be initialized properly.")
+
+        raw_bytes = image_data.get_data('RGB', image_data.width * 3)
+        img_np = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((image_data.height, image_data.width, 3))
+        img_np = np.flipud(img_np)
+
+        resize = resize or self.image_size
+        img = Image.fromarray(img_np)
+        img = img.resize(resize)
+        img_np = np.array(img).astype(np.float32) / 255.0
+
+        return tf.convert_to_tensor(img_np) if as_tensor else img_np
+    
     def reset(self):        
         self.goal['x'] = np.random.rand()*400.
         self.goal['y'] = np.random.rand()*400.
@@ -68,6 +100,8 @@ class ArmEnv(object):
         dist1 = [(self.goal['x'] - a1xy_[0])/400, (self.goal['y'] - a1xy_[1])/400]
         dist2 = [(self.goal['x'] - finger[0])/400, (self.goal['y'] - finger[1])/400]
         # state
+        self.ensure_render_initialized()   # Ensure window exists
+        self.render()
         s = np.concatenate((a1xy_/200, finger/200, dist1 + dist2, [1. if self.on_goal else 0.]))
         return s
 
@@ -78,30 +112,6 @@ class ArmEnv(object):
 
     def sample_action(self):
         return np.random.rand(2)-0.5    # two radians
-    
-    def get_image_observation(self, resize=(64, 64), as_tensor=True):
-        # Capture the screen buffer
-        buffer = pyglet.image.get_buffer_manager().get_color_buffer()
-        image_data = buffer.get_image_data()
-
-        # Convert to PIL image
-        data = image_data.get_data('RGB', image_data.width * 3)
-        img = Image.frombytes('RGB', (image_data.width, image_data.height), data)
-
-        # flip the image vertically
-        img = img.transpose(Image.FLIP_TOP_BOTTOM)
-
-        # Resize the image
-        img = img.resize(resize)
-
-        # Convert to numpy array
-        img_np = np.array(img).astype(np.float32) / 255.0
-
-        if as_tensor:
-            return tf.convert_to_tensor(img_np)
-        else:
-            return img_np
-
 
 
 class Viewer(pyglet.window.Window):
