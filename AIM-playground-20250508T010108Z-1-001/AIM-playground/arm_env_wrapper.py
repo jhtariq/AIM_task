@@ -10,6 +10,7 @@ class ArmPyEnvWrapper(py_environment.PyEnvironment):
         self._env = ArmEnv()
         self._image_size = image_size
         self.dt = 0.1  # refresh rate
+        self.current_step = 0
 
         # Define action spec: 2D continuous action between -1 and 1
         self._action_spec = array_spec.BoundedArraySpec(
@@ -41,8 +42,14 @@ class ArmPyEnvWrapper(py_environment.PyEnvironment):
         print("[RESET DEBUG] obs shape:", obs.shape, "max:", np.max(obs), "mean:", np.mean(obs))
         return ts.restart({'pixels': obs})
 
-    def _step(self, action):
+    def _step(self, action, current_step=0):
+        #add a counter to check the number of steps
         if self._episode_ended:
+            return self._reset()
+        
+        self.current_step += 1
+        if self.current_step > 20:
+            print("[STEP DEBUG] Max steps reached, resetting environment.")
             return self._reset()
 
         _, reward, done = self._env.step(action)

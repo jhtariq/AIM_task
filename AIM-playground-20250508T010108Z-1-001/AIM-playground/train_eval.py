@@ -76,35 +76,52 @@ def compute_summaries(metrics, tf_env, policy, num_episodes):
         policy: A TFPolicy (e.g., tf_agent.policy or GreedyPolicy(tf_agent.policy)).
         num_episodes: Number of episodes to run evaluation for.
     """
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    CYAN = "\033[96m"
+    YELLOW = "\033[93m"
+
+    print(f"{CYAN}[DEBUG] compute_summaries called with num_episodes = {num_episodes}")
+
     # Reset all metrics
     for metric in metrics:
+        print(f"{CYAN}[DEBUG] Resetting metric: {metric.name}")
         metric.reset()
 
+    print(f"{CYAN}[DEBUG] Resetting tf_env")
     time_step = tf_env.reset()
+    print(f"{CYAN}[DEBUG] Getting initial policy state")
     policy_state = policy.get_initial_state(batch_size=tf_env.batch_size)
 
     episode_count = 0
 
     while episode_count < num_episodes:
+        print(f"{YELLOW}[DEBUG] Episode {episode_count+1} / {num_episodes}")
+
+        print(f"{GREEN}[DEBUG] Getting action from policy")
         action_step = policy.action(time_step, policy_state)
+
+        print(f"{GREEN}[DEBUG] Stepping tf_env")
         next_time_step = tf_env.step(action_step.action)
-        # print("STEP obs max:", np.max(obs), "min:", np.min(obs), "mean:", np.mean(obs))
+
         traj = trajectory.from_transition(time_step, action_step, next_time_step)
 
+        print(f"{GREEN}[DEBUG] Updating metrics with trajectory")
         for observer in metrics:
             observer(traj)
 
-        # Count completed episodes
-        episode_count += tf.reduce_sum(tf.cast(traj.is_last(), tf.int32)).numpy()
+        completed_episodes = tf.reduce_sum(tf.cast(traj.is_last(), tf.int32)).numpy()
+        episode_count += completed_episodes
+        print(f"{GREEN}[DEBUG] Episodes completed this step: {completed_episodes}, total completed: {episode_count}")
 
         # Advance the environment state
         time_step = next_time_step
         policy_state = action_step.state
 
-    # Write summaries for the evaluation metrics
+    print(f"{CYAN}[DEBUG] Writing evaluation summaries")
     for metric in metrics:
+        print(f"{CYAN}[DEBUG] Summary for metric: {metric.name}")
         metric.tf_summaries(train_step=tf.compat.v1.train.get_global_step(), step_metrics=[])
-
 
 
 def get_control_timestep(py_env):
@@ -374,10 +391,6 @@ def train_eval(
     initial_collect_policy = random_tf_policy.RandomTFPolicy(time_step_spec, action_spec)
     initial_policy_state = initial_collect_policy.get_initial_state(tf_env.batch_size)
 
-    def log_observer(traj):
-        pixels = traj.observation['pixels']
-        # print(f"{BLUE}[BUFFER OBS] shape:", pixels.shape, "max:", tf.reduce_max(pixels), "mean:", tf.reduce_mean(pixels))
-
     
     initial_driver = dynamic_step_driver.DynamicStepDriver(
     tf_env,
@@ -385,13 +398,7 @@ def train_eval(
     observers=replay_observer + train_metrics,
     num_steps=initial_collect_steps  # at least sequence_length + 1
 )
-# Collects initial data to fill the replay buffer
-    # initial_driver = dynamic_step_driver.DynamicStepDriver(
-    #     tf_env,
-    #     initial_collect_policy,
-    #     observers=[replay_buffer.add_batch, log_observer] + train_metrics,
-    #     num_steps=initial_collect_steps
-    # )
+
 
     final_time_step, final_policy_state = initial_driver.run(
     policy_state=initial_policy_state
@@ -403,12 +410,7 @@ def train_eval(
     observers=replay_observer + train_metrics,
     num_steps=collect_steps_per_iteration
 )
-#     collect_driver = dynamic_step_driver.DynamicStepDriver(
-#     tf_env,
-#     collect_policy,
-#     observers=[replay_buffer.add_batch, log_observer] + train_metrics,
-#     num_steps=collect_steps_per_iteration
-# )
+
     # 4. Now it is safe to sample from the dataset
     def _filter_invalid_transition(trajectories, unused_arg1):
         return ~trajectories.is_boundary()[-2]
@@ -432,6 +434,13 @@ def train_eval(
         metric.tf_summaries(train_step=global_step, step_metrics=train_metrics[:2])
         for metric in train_metrics
     ]
+
+    for metric in train_metrics:
+        metric.tf_summaries(
+            train_step=global_step,
+            step_metrics=train_metrics[:2]
+        )
+
 
     if initial_model_train_steps:
         with tf.name_scope('initial'):
@@ -499,6 +508,7 @@ def train_eval(
 
         if iteration < initial_model_train_steps:
             total_loss = tf_agent.train_model(next(dataset_iterator)[0])
+            # tf.summary.scalar('training_loss', total_loss.loss, step=global_step)
         else:
             final_time_step, policy_state = collect_driver.run(
                 time_step=final_time_step,
@@ -506,7 +516,8 @@ def train_eval(
             )
             for _ in range(train_steps_per_iteration):
                 total_loss = tf_agent.train(next(dataset_iterator)[0])
-
+        
+        tf.summary.scalar('training_loss', total_loss.loss, step=global_step)
         # Increment global step
         global_step.assign_add(1)
         time_acc += time.time() - start_time
@@ -533,6 +544,7 @@ def train_eval(
                     (eval_greedy_metrics, eval_greedy_py_policy)
                 ]:
                 with eval_summary_writer.as_default():
+                    print(f"{GREEN}[DEBUG] Running evaluation for {_eval_policy} at step {iteration}")
                     compute_summaries(_eval_metrics, eval_tf_env, _eval_policy, num_eval_episodes)
                     eval_summary_writer.flush()
 

@@ -65,10 +65,9 @@ class ArmEnv(object):
         return s, r, done
     
     def get_image_observation(self, resize=None, as_tensor=False):
-        self.ensure_render_initialized()   # <-- this guarantees a warm buffer
+        # self.ensure_render_initialized()   # <-- this guarantees a warm buffer
 
-        self.render()  # render latest state
-
+        self.render(visible=True)  # Headless render
         buffer = pyglet.image.get_buffer_manager().get_color_buffer()
         image_data = buffer.get_image_data()
 
@@ -80,12 +79,13 @@ class ArmEnv(object):
         img_np = np.flipud(img_np)
 
         resize = resize or self.image_size
-        img = Image.fromarray(img_np)
-        img = img.resize(resize)
+        img = Image.fromarray(img_np).resize(resize)
         img_np = np.array(img).astype(np.float32) / 255.0
 
         return tf.convert_to_tensor(img_np) if as_tensor else img_np
-    
+
+
+
     def reset(self):        
         self.goal['x'] = np.random.rand()*400.
         self.goal['y'] = np.random.rand()*400.
@@ -100,15 +100,23 @@ class ArmEnv(object):
         dist1 = [(self.goal['x'] - a1xy_[0])/400, (self.goal['y'] - a1xy_[1])/400]
         dist2 = [(self.goal['x'] - finger[0])/400, (self.goal['y'] - finger[1])/400]
         # state
-        self.ensure_render_initialized()   # Ensure window exists
-        self.render()
+        # self.ensure_render_initialized()   # Ensure window exists
+        self.render(visible=True)
         s = np.concatenate((a1xy_/200, finger/200, dist1 + dist2, [1. if self.on_goal else 0.]))
         return s
 
-    def render(self):
-        if self.viewer is None:
-            self.viewer = Viewer(self.arm_info, self.goal)
+    # def render(self):
+    #     if self.viewer is None:
+    #         self.viewer = Viewer(self.arm_info, self.goal)
+    #     self.viewer.render()
+
+    def render(self, visible=False):
+        if self.viewer is None or self.viewer.visible_flag != visible:
+            if self.viewer:
+                self.viewer.close()
+            self.viewer = Viewer(self.arm_info, self.goal, visible=visible)
         self.viewer.render()
+
 
     def sample_action(self):
         return np.random.rand(2)-0.5    # two radians
@@ -117,11 +125,26 @@ class ArmEnv(object):
 class Viewer(pyglet.window.Window):
     bar_thc = 5
 
-    def __init__(self, arm_info, goal):
-        vsync=False # To speed up training  
+    def __init__(self, arm_info, goal, visible=True):
+        vsync = False  # To speed up training
+        self.visible_flag = visible
 
-        self.glconfig = pyglet.gl.Config(sample_buffers=1, samples=8, double_buffer=True)
-        super(Viewer, self).__init__(config=self.glconfig, width=400, height=400, resizable=False, caption='AIM', vsync=vsync, style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS)
+        # Anti-aliasing and double-buffering config
+        glconfig = pyglet.gl.Config(sample_buffers=1, samples=4, double_buffer=True)
+
+        # Initialize the window (same class, just toggle visibility)
+        super().__init__(
+            config=glconfig,
+            width=400,
+            height=400,
+            resizable=False,
+            caption='AIM',
+            visible=visible,
+            vsync=vsync
+        )
+
+        # self.glconfig = pyglet.gl.Config(sample_buffers=1, samples=8, double_buffer=True)
+        # super(Viewer, self).__init__(config=self.glconfig, width=400, height=400, resizable=False, caption='AIM', vsync=vsync, style=pyglet.window.Window.WINDOW_STYLE_BORDERLESS)
 
         pyglet.gl.glClearColor(0, 0, 0, 0)
         self.arm_info = arm_info
@@ -160,6 +183,8 @@ class Viewer(pyglet.window.Window):
         self.dispatch_events()
         self.dispatch_event('on_draw')
         self.flip()
+        pyglet.clock.tick() 
+        time.sleep(0.05)
 
     def on_draw(self):
         self.clear()
